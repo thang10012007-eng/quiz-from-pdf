@@ -1,0 +1,284 @@
+<!--
+Quiz-from-PDF — Single-file web app
+How to use:
+1. Save this file as `quiz-from-pdf.html`.
+2. Open it in a modern browser (Chrome/Edge/Firefox).
+3. Choose your PDF (e.g., `307-câu-hỏi-ôn-tập.pdf`) and click "Trích & Tạo Quiz".
+4. Review parsed text, click "Bắt đầu làm bài" to render quiz, chọn đáp án và "Nộp bài & Chấm điểm".
+
+Notes:
+- All processing runs in the browser (pdf.js). Nothing is uploaded to a server.
+- If you want to host it online, upload this single file to GitHub Pages, Netlify, or any static host.
+-->
+
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Quiz từ PDF — Trích & Chơi</title>
+<style>
+  body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial;margin:0;background:#f6f8fa;color:#111}
+  header{background:#0b67a3;color:#fff;padding:14px 18px}
+  main{padding:18px;max-width:980px;margin:18px auto;background:#fff;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.06)}
+  .controls{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+  button,input[type=file]{padding:8px 12px;border-radius:6px;border:1px solid #cbd5e1;background:#fff;cursor:pointer}
+  .hint{color:#6b7280;font-size:14px;margin-bottom:12px}
+  .qlist{margin-top:14px}
+  .question{padding:12px;border-radius:6px;border:1px solid #e6edf3;margin-bottom:10px}
+  .opts{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+  .result{padding:12px;background:#eef2ff;color:#1e293b;border-radius:6px;margin-top:12px}
+  .small{font-size:13px;color:#475569}
+  textarea{width:100%;min-height:120px}
+  .topbar{display:flex;gap:8px;align-items:center}
+  .right{margin-left:auto}
+  .btn-primary{background:#0b67a3;color:#fff;border:none}
+  .btn-danger{background:#ef4444;color:#fff;border:none}
+  .controls label{display:inline-block;padding:8px 12px;border-radius:6px;border:1px dashed #cbd5e1;background:#fbfdff;cursor:pointer}
+  a{color:#0b67a3}
+</style>
+</head>
+<body>
+<header><strong>Quiz từ PDF</strong> — Trích câu hỏi trắc nghiệm (A–D) & làm bài</header>
+<main>
+  <div class="topbar">
+    <div class="controls">
+      <label>
+        Chọn PDF
+        <input id="pdffile" type="file" accept="application/pdf" style="display:none" />
+      </label>
+      <button id="parseBtn" class="btn-primary">Trích & Tạo Quiz</button>
+      <button id="shuffleBtn">Xáo câu</button>
+      <button id="exportBtn">Xuất CSV kết quả</button>
+      <button id="downloadJSON">Tải JSON câu hỏi</button>
+    </div>
+    <div class="right small">
+      <span id="status">Chưa có file</span>
+    </div>
+  </div>
+
+  <p class="hint">Cách dùng: 1) Chọn file PDF (ví dụ: <em>307-câu-hỏi-ôn-tập.pdf</em>) — 2) Bấm <strong>Trích & Tạo Quiz</strong> — 3) Kiểm tra, bấm <strong>Bắt đầu làm bài</strong>.</p>
+
+  <div id="controlsAfter" style="display:none;margin-bottom:10px">
+    <button id="startBtn" class="btn-primary">Bắt đầu làm bài</button>
+    <button id="previewParse">Xem kết quả trích (văn bản thô)</button>
+    <label><input id="autoSplit" type="checkbox" checked /> Tự động loại bỏ dòng rỗng bất thường</label>
+  </div>
+
+  <div id="parseOutput" style="margin-top:10px"></div>
+
+  <div id="quizArea" style="display:none">
+    <div id="qcontainer" class="qlist"></div>
+    <div style="display:flex;gap:8px">
+      <button id="submitBtn" class="btn-primary">Nộp bài & Chấm điểm</button>
+      <button id="resetBtn" class="">Đặt lại</button>
+      <div id="score" class="result" style="display:none"></div>
+    </div>
+  </div>
+
+  <details style="margin-top:16px">
+    <summary>Ghi chú kỹ thuật (mình khuyên đọc nếu cần chỉnh)</summary>
+    <ol>
+      <li>App dùng <code>pdf.js</code> để convert từng trang PDF => text (chạy trên client).</li>
+      <li>Phân tích dựa trên biểu thức chính quy tìm số câu: <code>^\s*(\d{1,3})\.</code> và các lựa chọn bắt đầu bằng A., B., C., D. hoặc "A ".</li>
+      <li>Nếu PDF bị tách dòng lạ, app cố gắng gom dòng liền kề; bạn có thể bấm "Xem kết quả trích" để chỉnh tay phần text trước khi tạo quiz.</li>
+      <li>Không upload file ra server — mọi thứ xử lý trong trình duyệt.</li>
+    </ol>
+  </details>
+</main>
+
+<!-- pdf.js CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.172/pdf.min.js"></script>
+
+<script>
+/* JS chính: trích PDF -> parse -> hiển thị quiz */
+const fileInput = document.getElementById('pdffile');
+const parseBtn = document.getElementById('parseBtn');
+const status = document.getElementById('status');
+const parseOutput = document.getElementById('parseOutput');
+const controlsAfter = document.getElementById('controlsAfter');
+const startBtn = document.getElementById('startBtn');
+const previewParse = document.getElementById('previewParse');
+const autoSplit = document.getElementById('autoSplit');
+const qcontainer = document.getElementById('qcontainer');
+const quizArea = document.getElementById('quizArea');
+const submitBtn = document.getElementById('submitBtn');
+const scoreBox = document.getElementById('score');
+const shuffleBtn = document.getElementById('shuffleBtn');
+const exportBtn = document.getElementById('exportBtn');
+const downloadJSON = document.getElementById('downloadJSON');
+const resetBtn = document.getElementById('resetBtn');
+
+let parsedText = '';
+let questions = []; // {id, text, options: {A:...,B:...,C:...,D:...}, userAnswer:null, inferredAnswer:null}
+
+fileInput.addEventListener('change',()=> {
+  const f = fileInput.files[0];
+  status.textContent = f ? `File: ${f.name}` : 'Chưa có file';
+});
+
+parseBtn.addEventListener('click', async ()=> {
+  const f = fileInput.files[0];
+  if(!f){ alert('Chọn file PDF trước.'); return; }
+  status.textContent = 'Đang đọc PDF...';
+  parsedText = await pdfToText(f);
+  if(autoSplit.checked) parsedText = normalizeText(parsedText);
+  parseOutput.innerHTML = `<h4>Kết quả trích (tổng ${parsedText.length} ký tự)</h4><textarea id="rawText">${escapeHtml(parsedText)}</textarea>`;
+  controlsAfter.style.display='block';
+  status.textContent = 'Hoàn tất trích.';
+  // attempt parse to questions now (but only finalize on start)
+  questions = parseQuestionsFromText(parsedText);
+  parseOutput.innerHTML += `<p class="small">Phát hiện ~${questions.length} câu (bạn có thể xem & sửa văn bản trước khi bắt đầu).</p>`;
+});
+
+previewParse.addEventListener('click', ()=> {
+  parseOutput.scrollIntoView({behavior:'smooth'});
+});
+
+startBtn.addEventListener('click', ()=> {
+  // If user edited rawText, use it
+  const ta = document.getElementById('rawText');
+  if(ta) parsedText = ta.value;
+  questions = parseQuestionsFromText(parsedText);
+  if(questions.length===0){ alert('Không tìm thấy câu hỏi nào. Kiểm tra văn bản thô.'); return; }
+  renderQuiz();
+  quizArea.style.display='block';
+  window.scrollTo({top:document.body.scrollHeight, behavior:'smooth'});
+});
+
+submitBtn.addEventListener('click', ()=> {
+  let correct = 0, total=questions.length;
+  const detail = [];
+  questions.forEach((q, idx)=>{
+    const sel = document.querySelector(`input[name="q_${idx}"]:checked`);
+    q.userAnswer = sel ? sel.value : null;
+    // We don't have answer key in PDF; inference not reliable. So we only score if inferredAnswer present.
+    if(q.inferredAnswer){
+      if(q.userAnswer===q.inferredAnswer) correct++;
+    }
+  });
+  scoreBox.style.display='block';
+  scoreBox.innerHTML = `<strong>Kết quả:</strong> ${correct}/${total} (chỉ chấm được các câu có đáp án suy đoán trong văn bản).<br><span class="small">Bạn có thể tải file JSON để chỉnh đáp án chính xác nếu cần.</span>`;
+});
+
+shuffleBtn.addEventListener('click', ()=> {
+  shuffleArray(questions);
+  renderQuiz();
+});
+
+exportBtn.addEventListener('click', ()=> {
+  // Export user answers to CSV
+  let csv = 'Câu số,Đáp đã chọn,Đáp suy đoán (nếu có),Nội dung câu\n';
+  questions.forEach((q,i)=>{
+    const ua = q.userAnswer || '';
+    const ia = q.inferredAnswer || '';
+    csv += `${q.id || i+1},"${ua}","${ia}","${(q.text||'').replace(/"/g,'""')}\n`;
+  });
+  downloadData(csv, 'quiz-results.csv', 'text/csv;charset=utf-8;');
+});
+
+downloadJSON.addEventListener('click', ()=> {
+  const out = JSON.stringify(questions, null, 2);
+  downloadData(out, 'questions.json', 'application/json');
+});
+
+resetBtn.addEventListener('click', ()=> {
+  questions.forEach(q=> q.userAnswer = null);
+  renderQuiz();
+  scoreBox.style.display='none';
+});
+
+/* ---- helper functions ---- */
+
+async function pdfToText(file){
+  const arrayBuf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({data:arrayBuf}).promise;
+  let fullText = '';
+  for(let p=1;p<=pdf.numPages;p++){
+    const page = await pdf.getPage(p);
+    const txt = await page.getTextContent();
+    const pageText = txt.items.map(i=>i.str).join(' ');
+    fullText += `\n\n[Page ${p}]\n` + pageText + '\n';
+  }
+  return fullText;
+}
+
+function normalizeText(s){
+  // remove weird multiple spaces and fix common OCR breaks
+  return s.replace(/\s+\n/g,'\n').replace(/\s{2,}/g,' ').trim();
+}
+
+function parseQuestionsFromText(text){
+  const lines = text.split(/\n/).map(l=>l.trim()).filter(l=>l!=='');
+  const joined = lines.join('\n');
+  // Regex approach: split on lines that start with "number." (e.g., "1." or "157.")
+  const qBlocks = joined.split(/(?=\n?\s*\d{1,3}\.)/m).map(b=>b.trim()).filter(b=>b.match(/^\d{1,3}\./));
+  const qs = [];
+  qBlocks.forEach(block=>{
+    // id
+    const mId = block.match(/^(\d{1,3})\./);
+    const id = mId ? mId[1] : null;
+    // find options A., B., C., D. (or A) etc.
+    const optMatches = Array.from(block.matchAll(/\b([A-D])(?:\.|\)|\s)\s*([^A-D\n\r]+?)(?=(?:\b[A-D](?:\.|\)|\s)|$)/gs));
+    let qText = block;
+    const opts = {};
+    optMatches.forEach(m=>{
+      const key = m[1].trim();
+      let val = m[2].trim().replace(/\n/g,' ');
+      opts[key] = val;
+    });
+    if(Object.keys(opts).length < 2){
+      const lineParts = block.split(/\n/);
+      const textLines = [];
+      lineParts.forEach(ln=>{
+        const mm = ln.match(/^([A-D])(?:\.|\)|\s)\s*(.*)/);
+        if(mm){ opts[mm[1]]=mm[2].trim(); }
+        else textLines.push(ln);
+      });
+      qText = textLines.join(' ');
+    } else {
+      qText = block.replace(/\b[A-D](?:\.|\)|\s)\s*[^A-D\n\r]+/gs,'').trim();
+      qText = qText.replace(/^\d{1,3}\./,'').trim();
+    }
+    let inferred = null;
+    qs.push({id, text: qText, options: opts, userAnswer: null, inferredAnswer: inferred});
+  });
+  return qs;
+}
+
+function renderQuiz(){
+  qcontainer.innerHTML = '';
+  questions.forEach((q, idx)=>{
+    const el = document.createElement('div'); el.className='question';
+    const qh = document.createElement('div');
+    qh.innerHTML = `<strong>${q.id || (idx+1)}.</strong> ${escapeHtml(q.text||'--')}`;
+    el.appendChild(qh);
+    const optWrap = document.createElement('div'); optWrap.className='opts';
+    const keys = Object.keys(q.options || {});
+    if(keys.length===0){
+      const p = document.createElement('p'); p.className='small'; p.textContent='Không tìm thấy phương án A-D cho câu này — bạn có thể sửa trong raw text.'; optWrap.appendChild(p);
+    } else {
+      keys.forEach(k=>{
+        const id = `q_${idx}_${k}`;
+        const lab = document.createElement('label');
+        lab.innerHTML = `<input type="radio" name="q_${idx}" value="${k}" /> <strong>${k}.</strong> ${escapeHtml(q.options[k]||'')}`;
+        optWrap.appendChild(lab);
+      });
+    }
+    el.appendChild(optWrap);
+    qcontainer.appendChild(el);
+  });
+}
+
+/* small utilities */
+function escapeHtml(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function shuffleArray(a){ for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } }
+function downloadData(content, filename, mime){
+  const blob = new Blob([content], {type: mime});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 1500);
+}
+</script>
+</body>
+</html>
